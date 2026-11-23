@@ -107,5 +107,7 @@ yourself shortly before sending it. Secrets can be changed later under **App →
 | "No AI key available" on the hosted app | The secret name must be exactly `GEMINI_API_KEY`. Reboot the app after editing secrets. |
 | Detection error mentioning 401/403 | Key wrong, or the Gemini API is not enabled for that key. |
 | Detection error mentioning 429 | Free-tier quota hit. Wait a minute, or use another key. |
-| Model not found | Set `GEMINI_MODEL` in secrets to a model your key can use (e.g. a newer Flash model). |
+| Model not found | Set `GEMINI_MODEL` in secrets to a model your key can use (default `gemini-3.5-flash`). |
+| "overloaded" message | Google-side spike; the app already falls back to `gemini-2.5-flash`. Retry in a minute. |
+| Photoreal says "no quota" | Image models need a billing-enabled key; the rest of the app is unaffected. |
 | Build fails on a package version | Lower the Python version to 3.12 in Advanced settings, or loosen the pin in `requirements.txt`. |

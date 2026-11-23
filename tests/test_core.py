@@ -207,7 +207,7 @@ def test_detect_surfaces_api_errors(monkeypatch):
         raise RuntimeError("401 invalid key")
 
     monkeypatch.setattr(det, "_call_openai", boom)
-    with pytest.raises(DetectionError, match="401"):
+    with pytest.raises(DetectionError, match="rejected"):
         detect_components(np.zeros((50, 50, 3), np.uint8), "openai", "k")
 
 

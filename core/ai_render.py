@@ -16,7 +16,7 @@ import os
 import numpy as np
 from PIL import Image
 
-from .detection import DetectionError
+from .detection import DetectionError, friendly_error
 
 
 def build_prompt(material_lines: list[str]) -> str:
@@ -43,7 +43,8 @@ def photoreal_render(original_rgb: np.ndarray, preview_rgb: np.ndarray, material
         Image.fromarray(arr).save(buf, format="PNG")
         return buf.getvalue()
 
-    client = genai.Client(api_key=api_key)
+    # JSON mode and image output are only enabled on v1beta for this SDK version.
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
     try:
         resp = client.models.generate_content(
             model=model,
@@ -55,7 +56,7 @@ def photoreal_render(original_rgb: np.ndarray, preview_rgb: np.ndarray, material
             config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"]),
         )
     except Exception as exc:
-        raise DetectionError(f"Image model request failed: {exc}") from exc
+        raise DetectionError(friendly_error("Gemini image model", exc)) from exc
     for cand in resp.candidates or []:
         for part in (cand.content.parts if cand.content else []) or []:
             if getattr(part, "inline_data", None) and part.inline_data.data:

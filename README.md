@@ -105,6 +105,18 @@ every one can be edited in the app.
 20.0 px/ft, and the computed wall areas match the hand-calculated values exactly. Example: ground floor wall
 37 × 9.6 ft − 2 windows − door − 2 chajjas = 296.2 sqft (see `tests/test_core.py`).
 
+### Detection quality (live Gemini run on the sample house)
+
+Boxes are compared with the known layout (IoU = overlap ÷ union of the predicted and true box):
+
+| Model | Components found | Typical IoU | Scale recovered (true 20.0 px/ft) |
+|---|---|---|---|
+| `gemini-3.5-flash` (default) | 16 of 17 | 0.85–0.99 (walls, windows, doors, pillars, railing, gate, parapet); chajjas 0.74; slab band 0.56 | 19.86–19.93 |
+| `gemini-2.5-flash` (fallback) | many fragments | mostly < 0.4 | 12.6 (37 % off) |
+
+That is why the default is `gemini-3.5-flash`, with `gemini-2.5-flash` used only when the primary model is
+overloaded. The thin balcony fascia is the one part it misses; the review step exists for exactly this.
+
 ## 4. Design decisions and trade-offs
 
 - **LLM for detection, user as the final authority.** A general vision model gives a usable first map with no
@@ -132,7 +144,7 @@ every one can be edited in the app.
 - **Single photo, single elevation.** Side and rear walls are not seen. The facade multiplier is a rough proxy.
 - **Perspective.** The photo is assumed to be roughly front-on. Angled shots compress far walls and skew areas.
   There is no perspective rectification yet.
-- **Detection quality depends on the model.** Not fine-tuned for Indian residential facades. Trees, cars and
+- **Detection quality depends on the model** (see the table above). Not fine-tuned for Indian residential facades. Trees, cars and
   wires can confuse it. Users must review the map.
 - **Boxes over-cover irregular shapes** (sloped roofs, curved balconies) unless the user splits them.
 - **Renderer realism.** Textures are procedural and lighting is approximated from the photo's luminance. Strong
@@ -140,8 +152,10 @@ every one can be edited in the app.
 - **Rates are indicative** and not region-specific. No live supplier pricing.
 - **Not covered:** surface preparation (crack filling, waterproofing, putty), scaffolding, removal of old
   cladding. These belong in contingency until added as line items.
-- The AI detection and photoreal paths were tested with mocked model responses. They have **not yet been run
-  against the live Gemini/OpenAI APIs** in this build (no key was available while building). See *Next steps*.
+- The optional photoreal pass needs a Gemini key with billing enabled: image models have no free-tier quota.
+  Detection works on the free tier.
+- Live detection has been measured on the bundled sample only (see *Detection quality* below). It still needs an
+  evaluation set of real, tape-measured houses.
 
 ## 6. Next steps
 
@@ -174,7 +188,7 @@ Open http://localhost:8501. Without a key, click **Load the sample house**.
 python -m pytest -q
 ```
 
-27 tests cover masking, scale calibration, area ground truth, quantity formulas, purchase rounding, totals,
+28 tests (one live, opt-in with `RUN_LIVE_TESTS=1`) cover masking, scale calibration, area ground truth, quantity formulas, purchase rounding, totals,
 LLM-output parsing (fenced JSON, synonyms, retries, API errors), the quality gate, project save/load, PDF
 generation, render isolation, and three headless end-to-end UI flows (Streamlit `AppTest`).
 
@@ -184,7 +198,7 @@ generation, render isolation, and three headless end-to-end UI flows (Streamlit 
 |---|---|
 | `GEMINI_API_KEY` | enables AI detection (recommended) and the optional photoreal pass |
 | `OPENAI_API_KEY` | alternative detection provider |
-| `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `OPENAI_MODEL` | model overrides |
+| `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_IMAGE_MODEL`, `OPENAI_MODEL` | model overrides (defaults: `gemini-3.5-flash`, fallback `gemini-2.5-flash`) |
 | `APP_ACCESS_CODE` | if set, visitors need this code to use the hosted key |
 | `AI_CALLS_PER_SESSION` | cap on hosted-key calls per browser session (default 12) |
 

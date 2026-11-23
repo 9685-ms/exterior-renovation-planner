@@ -29,14 +29,16 @@ log = logging.getLogger(__name__)
 
 PROMPT = """You are mapping the exterior of a low-rise residential building for a renovation estimate.
 Detect every visible instance of these components on the house facade:
-- wall: large plain plastered/painted wall surfaces (one box per distinct wall plane or floor band)
+- wall: the main plastered/painted wall surface of each floor. Use ONE box per floor spanning the full
+  width of that floor's wall; do not split a wall around windows or doors (openings are subtracted later)
 - window: each window opening including its frame
 - door: each door opening (main door, balcony door)
-- balcony: the balcony slab edge / fascia and balcony parapet (not the railing)
+- balcony: the projecting balcony slab edge / fascia below a railing (a thin horizontal strip), not the railing
 - railing: each railing or balustrade run (metal, glass or grill)
-- pillar: each pillar or column
-- parapet: parapet wall along the roof line
-- roof_edge: roof edges, chajjas / sunshades above windows, sloped roof eaves
+- pillar: each pillar or column, including narrow full-height corner columns at the left and right ends
+  of the facade that look slightly different from the wall
+- parapet: the low solid wall running along the top of the flat roof (the topmost horizontal band of the building)
+- roof_edge: horizontal floor-slab bands between storeys, chajjas / sunshades above windows, sloped roof eaves
 - gate: the compound gate and gate area if visible
 Ignore trees, cars, people, sky, road and neighbouring buildings.
 
@@ -68,6 +70,22 @@ class _Response(BaseModel):
 
 class DetectionError(RuntimeError):
     pass
+
+
+def friendly_error(provider: str, exc: Exception) -> str:
+    """Turn raw SDK errors into a short message a homeowner can act on."""
+    msg = str(exc)
+    low = msg.lower()
+    if "429" in msg or "resource_exhausted" in low or "quota" in low:
+        if "limit: 0" in low:
+            return (f"{provider}: this API key has no quota for this model on the free tier. "
+                    "Use a key with billing enabled for this feature.")
+        return f"{provider}: rate limit or quota reached. Wait a minute and try again."
+    if any(c in msg for c in ("401", "403")) or "api key" in low or "permission" in low:
+        return f"{provider}: the API key was rejected. Check the key in the sidebar or the app secrets."
+    if "404" in msg or "not found" in low:
+        return f"{provider}: model not available for this key. Set GEMINI_MODEL / OPENAI_MODEL to a model you can use."
+    return f"{provider} request failed: {msg[:300]}"
 
 
 def _extract_json(text: str) -> dict:
@@ -135,7 +153,8 @@ def _call_gemini(image_jpeg: bytes, api_key: str, model: str) -> str:
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+    # JSON mode and image output are only enabled on v1beta for this SDK version.
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
     resp = client.models.generate_content(
         model=model,
         contents=[types.Part.from_bytes(data=image_jpeg, mime_type="image/jpeg"), PROMPT],
@@ -166,25 +185,57 @@ def _call_openai(image_jpeg: bytes, api_key: str, model: str) -> str:
     return resp.choices[0].message.content or ""
 
 
+TRANSIENT = ("503", "500", "unavailable", "overloaded", "high demand", "deadline", "timeout", "timed out")
+
+
+def _is_transient(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return any(t in low for t in TRANSIENT)
+
+
+def _model_chain(provider: str, model: str | None) -> list[str]:
+    if model:
+        return [model]
+    if provider == "gemini":
+        primary = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash")
+    else:
+        primary = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+        fallbacks = os.getenv("OPENAI_FALLBACK_MODELS", "")
+    chain = [primary] + [m.strip() for m in fallbacks.split(",") if m.strip()]
+    return list(dict.fromkeys(chain))
+
+
 def detect_components(image_rgb: np.ndarray, provider: str, api_key: str, model: str | None = None,
                       retries: int = 1) -> tuple[list[Region], dict]:
-    """Call the provider and return (regions, run_info)."""
-    model = model or (os.getenv("GEMINI_MODEL", "gemini-2.5-flash") if provider == "gemini"
-                      else os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
+    """Call the provider and return (regions, run_info).
+
+    Malformed model output is retried once on the same model. Transient
+    server errors (overloaded / 5xx) move on to the next model in the chain.
+    Auth and quota errors stop immediately with a readable message.
+    """
     call = {"gemini": _call_gemini, "openai": _call_openai}.get(provider)
     if call is None:
         raise DetectionError(f"Unknown provider {provider!r}")
     jpeg = _jpeg_bytes(image_rgb)
-    last_exc: Exception | None = None
-    for attempt in range(retries + 1):
-        t0 = time.perf_counter()
-        try:
-            text = call(jpeg, api_key, model)
-            regions = parse_components(text)
-            return regions, {"provider": provider, "model": model, "seconds": round(time.perf_counter() - t0, 1),
-                             "count": len(regions), "attempts": attempt + 1}
-        except DetectionError as exc:
-            last_exc = exc  # malformed output: worth one retry
-        except Exception as exc:  # network / auth / quota: surface immediately
-            raise DetectionError(f"{provider} request failed: {exc}") from exc
-    raise DetectionError(str(last_exc))
+    last_msg = "No model was tried."
+    tried: list[str] = []
+    for m in _model_chain(provider, model):
+        tried.append(m)
+        for attempt in range(retries + 1):
+            t0 = time.perf_counter()
+            try:
+                text = call(jpeg, api_key, m)
+                regions = parse_components(text)
+                return regions, {"provider": provider, "model": m, "seconds": round(time.perf_counter() - t0, 1),
+                                 "count": len(regions), "attempts": attempt + 1, "models_tried": tried}
+            except DetectionError as exc:
+                last_msg = str(exc)  # malformed output: retry same model
+                continue
+            except Exception as exc:
+                if _is_transient(exc):
+                    log.warning("%s %s transient error, trying next model: %s", provider, m, exc)
+                    last_msg = f"{provider} ({m}) is temporarily overloaded. Please try again in a minute."
+                    break
+                raise DetectionError(friendly_error(provider, exc)) from exc
+    raise DetectionError(last_msg)
