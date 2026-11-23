@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
+scratch/
+.pytest_cache/
+*.pdf
+SUBMISSION_NOTES.md

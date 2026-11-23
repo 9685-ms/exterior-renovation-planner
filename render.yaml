@@ -1,0 +1,14 @@
+# Render Blueprint: New -> Blueprint -> pick this repo. Free plan sleeps after inactivity.
+services:
+  - type: web
+    name: exterior-renovation-planner
+    runtime: docker
+    plan: free
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_ACCESS_CODE
+        sync: false
+      - key: AI_CALLS_PER_SESSION
+        value: "12"
